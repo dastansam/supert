@@ -1,2 +1,3 @@
 # supert
-Bytecode interpreter
+Supert Virtual Machine
+
