@@ -38,6 +38,9 @@ impl SupertVM {
         }
     }
 
+    /// Interprets the program.
+    /// 
+    /// Runs insructions one by one.
     pub(crate) fn interpret(mut self) -> ProgramResult {
         loop {
             match self.instructions.pop() {
