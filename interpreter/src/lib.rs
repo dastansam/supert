@@ -1,16 +1,17 @@
-use std::result;
+use std::{result, collections::HashMap};
 
 /// Data type that represents a Bytecode interpreter.
 /// 
 /// A program is a sequence of instructions. Interpreter is stack based, rather than register based.
 pub struct SupertVM {
     pub instructions: Vec<Instruction>,
-    pub stack: Vec<i32>,
+    pub stack: Vec<i64>,
+    pub memory: HashMap<String, i64>,
 }
 
 /// Types of instructions that can be performed on the stack.
 pub enum Instruction {
-    LoadVal(i32),
+    LoadVal(i64),
     WriteVar(String),
     ReadVar(String),
     LoopStart,
@@ -23,86 +24,199 @@ pub enum Instruction {
     Finish,
 }
 
+
+/// VM error type
+#[derive(Debug, PartialEq)]
+pub enum VMError {
+    DivisionByZero,
+    StackOverflow,
+    StackUnderflow,
+    UnknownInstruction,
+}
+
 /// Program result.
 pub enum ProgramResult {
     Ok,
     CompileError,
     RuntimeError,
+    ProgramError(VMError),
+}
+
+macro_rules! execute_opcode {
+    ($supert_vm:expr, $opcode:tt) => {{
+        match $supert_vm.stack.pop() {
+            Some(a) => {
+                match $supert_vm.stack.pop() {
+                    Some(b) => {
+                        $supert_vm.stack.push(b $opcode a);
+                        None
+                    },
+                    _ => Some(VMError::StackUnderflow),
+                }
+            },
+            _ => Some(VMError::StackUnderflow),
+        }
+    }}
 }
 
 impl SupertVM {
-    pub fn new() -> SupertVM {
+    pub fn new(instructions: Vec<Instruction>) -> SupertVM {
         SupertVM {
-            instructions: Vec::new(),
+            instructions,
             stack: Vec::new(),
+            memory: HashMap::new(),
         }
     }
 
     /// Interprets the program.
     /// 
     /// Runs insructions one by one.
-    pub(crate) fn interpret(mut self) -> ProgramResult {
-        loop {
-            match self.instructions.pop() {
-                Some(Instruction::LoadVal(val)) => {
+    pub(crate) fn interpret(mut self) -> Result<i64, VMError> {
+        for instruction in self.instructions {
+            let instruction_res = match instruction {
+                Instruction::LoadVal(val) => {
                     self.stack.push(val);
+                    None
                 },
-                Some(Instruction::WriteVar(var)) => {
-                    let val = self.stack.pop().unwrap();
-                    println!("{} = {}", var, val);
-                },
-                Some(Instruction::ReadVar(var)) => {
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input).unwrap();
-                    let val = input.trim().parse::<i32>().unwrap();
-                    self.stack.push(val);
-                },
-                Some(Instruction::LoopStart) => {
-                    let val = self.stack.pop().unwrap();
-                    if val == 0 {
-                        self.instructions.pop();
+                Instruction::WriteVar(var) => {
+                    match self.stack.pop() {
+                        Some(val) => {
+                            self.memory.insert(var, val);
+                            None
+                        },
+                        _ => Some(VMError::StackUnderflow),
                     }
                 },
-                Some(Instruction::LoopEnd) => {
+                Instruction::ReadVar(var) => {
+                    match self.memory.get(&var) {
+                        Some(val) => {
+                            self.stack.push(*val);
+                            None
+                        },
+                        _ => Some(VMError::StackUnderflow),
+                    }
+                },
+                Instruction::LoopStart => {
                     let val = self.stack.pop().unwrap();
-                    self.instructions.push(Instruction::LoopStart);
-                    self.instructions.push(Instruction::LoadVal(val));
+                    None
                 },
-                Some(Instruction::Add) => {
-                    let val2 = self.stack.pop().unwrap();
-                    let val1 = self.stack.pop().unwrap();
-                    self.stack.push(val1 + val2);
+                Instruction::LoopEnd => {
+                    let val = self.stack.pop().unwrap();
+                    None
                 },
-                Some(Instruction::Sub) => {
-                    let val2 = self.stack.pop().unwrap();
-                    let val1 = self.stack.pop().unwrap();
-                    self.stack.push(val1 - val2);
+                Instruction::Add => execute_opcode!(self, +),
+                Instruction::Sub => execute_opcode!(self, -),
+                Instruction::Mul => execute_opcode!(self, *),
+                Instruction::Div => {
+                    if let (Some(a), Some(b)) = (self.stack.pop(), self.stack.pop()) {
+                        if b == 0 {
+                            Some(VMError::DivisionByZero)
+                        } else {
+                            self.stack.push(a / b);
+                            None
+                        }
+                    } else {
+                        Some(VMError::StackUnderflow)
+                    }
                 },
-                Some(Instruction::Mul) => {
-                    let val2 = self.stack.pop().unwrap();
-                    let val1 = self.stack.pop().unwrap();
-                    self.stack.push(val1 * val2);
-                },
-                Some(Instruction::Div) => {
-                    let val2 = self.stack.pop().unwrap();
-                    let val1 = self.stack.pop().unwrap();
-                    self.stack.push(val1 / val2);
-                },
-                Some(Instruction::Mod) => {
-                    let val2 = self.stack.pop().unwrap();
-                    let val1 = self.stack.pop().unwrap();
-                    self.stack.push(val1 % val2);
-                },
-                Some(Instruction::Finish) => {
-                    return ProgramResult::Ok;
-                },
-                None => {
-                    return ProgramResult::RuntimeError;
-                },
-                _ => {
-                    return ProgramResult::CompileError;
-                },
+                Instruction::Mod => execute_opcode!(self, %),
+                Instruction::Finish => break,
+            };
+
+            // If instruction fails to execute, return error.
+            if let Some(err) = instruction_res {
+                return Err(err);
             }
         }
+
+        match self.stack.pop() {
+            Some(result) => Ok(result),
+            None => Err(VMError::StackUnderflow),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_add() {
+        let vm = SupertVM::new(vec![
+            Instruction::LoadVal(5),
+            Instruction::LoadVal(6),
+            Instruction::Add,
+        ]);
+        assert_eq!(vm.interpret().unwrap_or(0), 11);
+    }
+
+    #[test]
+    fn test_var_add() {
+        let vm = SupertVM::new(vec![
+            Instruction::LoadVal(5),
+            Instruction::WriteVar("a".to_string()),
+            Instruction::LoadVal(6),
+            Instruction::WriteVar("b".to_string()),
+            Instruction::ReadVar("a".to_string()),
+            Instruction::ReadVar("b".to_string()),
+            Instruction::Add,
+        ]);
+        assert_eq!(vm.interpret().unwrap_or(0), 11);
+    }
+
+    #[test]
+    fn test_simple_sub() {
+        let vm = SupertVM::new(vec![
+            Instruction::LoadVal(5),
+            Instruction::LoadVal(6),
+            Instruction::Sub,
+        ]);
+        assert_eq!(vm.interpret().unwrap_or(0), -1);
+    }
+
+    #[test]
+    fn test_simple_mul() {
+        let vm = SupertVM::new(vec![
+            Instruction::LoadVal(5),
+            Instruction::LoadVal(6),
+            Instruction::Mul,
+        ]);
+        assert_eq!(vm.interpret().unwrap_or(0), 30);
+    }
+
+    #[test]
+    fn test_simple_div() {
+        let vm = SupertVM::new(vec![
+            Instruction::LoadVal(6),
+            Instruction::LoadVal(15),
+            Instruction::Div,
+        ]);
+        assert_eq!(vm.interpret().unwrap_or(0), 2);
+
+        // Test division by zero
+        let vm = SupertVM::new(vec![
+            Instruction::LoadVal(0),
+            Instruction::LoadVal(5),
+            Instruction::Div,
+        ]);
+        assert_eq!(vm.interpret().err(), Some(VMError::DivisionByZero));
+    }
+
+    #[test]
+    fn test_arithmetic_expression() {
+        // 1 + 3 * 4 - 5
+        let mut vm = SupertVM::new(Default::default());
+        vm.instructions.push(Instruction::LoadVal(1));
+        vm.instructions.push(Instruction::LoadVal(3));
+        vm.instructions.push(Instruction::LoadVal(4));
+        vm.instructions.push(Instruction::Mul);
+        vm.instructions.push(Instruction::Add);
+        vm.instructions.push(Instruction::LoadVal(5));
+        vm.instructions.push(Instruction::Sub);
+        vm.instructions.push(Instruction::Finish);
+
+        let result = vm.interpret().unwrap_or(0);
+        assert_eq!(result, 8);
     }
 }
