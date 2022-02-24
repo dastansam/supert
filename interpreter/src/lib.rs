@@ -1,11 +1,14 @@
-use std::{result, collections::HashMap};
+use std::{collections::HashMap};
 
 /// Data type that represents a Bytecode interpreter.
 /// 
 /// A program is a sequence of instructions. Interpreter is stack based, rather than register based.
 pub struct SupertVM {
+    // List of instructions
     pub instructions: Vec<Instruction>,
+    // Program stack
     pub stack: Vec<i64>,
+    /// Mapping for local variables
     pub memory: HashMap<String, i64>,
 }
 
@@ -71,7 +74,7 @@ impl SupertVM {
     /// Interprets the program.
     /// 
     /// Runs insructions one by one.
-    pub(crate) fn interpret(mut self) -> Result<i64, VMError> {
+    pub fn interpret(mut self) -> Result<i64, VMError> {
         for instruction in self.instructions {
             let instruction_res = match instruction {
                 Instruction::LoadVal(val) => {
@@ -97,11 +100,11 @@ impl SupertVM {
                     }
                 },
                 Instruction::LoopStart => {
-                    let val = self.stack.pop().unwrap();
+                    // let val = self.stack.pop().unwrap();
                     None
                 },
                 Instruction::LoopEnd => {
-                    let val = self.stack.pop().unwrap();
+                    // let val = self.stack.pop().unwrap();
                     None
                 },
                 Instruction::Add => execute_opcode!(self, +),
