@@ -1,0 +1,12 @@
+[package]
+name = "line-counter"
+description = "Provided directory path and file extension, counts lines in all files with the given extension"
+version = "0.1.0"
+authors = ["Dastan <dastanbeksamatov@gmail.com>"]
+edition = "2021"
+
+[[bin]]
+name = "counter"
+path = "main.rs"
+
+[dependencies]
