@@ -17,7 +17,7 @@ const MAX_STACK_SIZE: usize = 65535;
 #[derive(Debug)]
 pub struct Bytecode {
     /// Instructions bytecode
-    pub instructions: Vec<u8>,
+    pub instructions: Vec<Instruction>,
     /// Program stack
     pub stack: Vec<StackValue>,
     /// Method name mapped to start instruction pointer
@@ -48,7 +48,7 @@ macro_rules! execute_native {
 }
 
 impl Bytecode {
-    pub fn new(instructions: Vec<u8>) -> Bytecode {
+    pub fn new(instructions: Vec<Instruction>) -> Bytecode {
         Bytecode {
             instructions,
             method_labels: HashMap::new(),
@@ -59,21 +59,20 @@ impl Bytecode {
     }
 
     /// Get next instruction from the program
-    fn next_instruction(&mut self) -> Option<Instruction> {
+    fn next_instruction(mut self) -> Option<Instruction> {
         if self.ip >= self.instructions.len() {
             return None;
         }
-        let instruction = self.instructions[self.ip];
+        let instruction = &self.instructions[self.ip];
         println!("Current ip: {} Instruction: {:?}", self.ip, instruction);
         self.ip += 1;
-        Some(Instruction::from(instruction))
+        Some(*instruction)
     }
 
     /// Push a value onto the stack
-    fn push_val(&mut self, val: i64) -> Result<(), VMError> {
-        dbg!("Pushing value onto stack");
+    fn push_val(mut self, val: StackValue) -> Result<(), VMError> {
         if self.stack.len() < MAX_STACK_SIZE {
-            self.stack.push(StackValue::Int(val));
+            self.stack.push(val);
             Ok(())
         } else {
             Err(VMError::StackOverflow)
@@ -81,7 +80,7 @@ impl Bytecode {
     }
 
     /// Pop a value from the stack
-    fn pop_val(&mut self) -> Result<i64, VMError> {
+    fn pop_val(mut self) -> Result<i64, VMError> {
         if self.stack.len() > 0 {
             Ok(self.stack.pop().unwrap().into())
         } else {
@@ -90,7 +89,7 @@ impl Bytecode {
     }
 
     /// Pop sender from the stack
-    fn pop_sender(&mut self) -> Result<Sender<i64>, VMError> {
+    fn pop_sender(mut self) -> Result<Sender<i64>, VMError> {
         if self.stack.len() > 0 {
             match self.stack.pop().unwrap() {
                 StackValue::Channel(sender, _receiver) => Ok(sender),
@@ -102,7 +101,7 @@ impl Bytecode {
     }
 
     /// Pop receiver from the stack
-    fn pop_receiver(&mut self) -> Result<Receiver<i64>, VMError> {
+    fn pop_receiver(mut self) -> Result<Receiver<i64>, VMError> {
         if self.stack.len() > 0 {
             match self.stack.pop().unwrap() {
                 StackValue::Channel(_sender, receiver) => Ok(receiver),
@@ -113,121 +112,60 @@ impl Bytecode {
         }
     }
 
-    /// Read next string from the program
-    /// Variable names are strictly 4 character long
-    fn read_string(&mut self) -> Result<String, VMError> {
-        let string = self.instructions[self.ip..self.ip + 4]
-            .iter()
-            .map(|&byte| byte as char)
-            .collect::<String>();
-        self.ip += 4;
-        Ok(string)
-    }
-
-    /// Read next byte from the program
-    fn read_byte(&mut self) -> Result<u8, VMError> {
-        let byte = self.instructions[self.ip];
-        self.ip += 1;
-        Ok(byte)
-    }
-
-    /// Read next short integer from the program
-    fn read_short(&mut self) -> Result<i16, VMError> {
-        match self.instructions[self.ip..self.ip+2].try_into() {
-            Ok(val) => {
-                self.ip += 2;
-                Ok(i16::from_le_bytes(val))
-            },
-            Err(_) => Err(VMError::UnknownInstruction),
-        }
-    }
-
-    /// Read next short integer from the program
-    fn read_i32(&mut self) -> Result<i32, VMError> {
-        match self.instructions[self.ip..self.ip+4].try_into() {
-            Ok(val) => {
-                self.ip += 4;
-                Ok(i32::from_le_bytes(val))
-            },
-            Err(_) => Err(VMError::UnknownInstruction),
-        }
-    }
-
-    /// Read next long integer from the program
-    fn read_long(&mut self) -> Result<i64, VMError> {
-        match self.instructions[self.ip..self.ip + 8].try_into() {
-            Ok(val) => {
-                println!("Reading long {:?}", val);
-                self.ip += 8;
-                Ok(i64::from_le_bytes(val))
-            },
-            Err(_) => Err(VMError::StackOverflow),
-        }
-    }
-
     /// Interprets the program.
     /// 
     /// Runs insructions one by one.
-    pub fn interpret(&mut self) -> Result<i64, VMError> {
-        println!("Instructions: {:?}", self.instructions.clone());
+    pub fn interpret(mut self) -> Result<i64, VMError> {
         loop {
             let current_instruction = self.next_instruction();
             let instruction_res = match current_instruction {
                 Some(instruction) => {
                     match instruction {
-                        Instruction::LoadVal => {
-                            let val = self.read_long()?;
-                            println!("LoadVal: {}", val);
+                        Instruction::LoadVal(val) => {
                             self.push_val(val)?;
                             None
                         },
-                        Instruction::WriteVar => {
-                            let var_name = self.read_string()?;
+                        Instruction::WriteVar(var_name) => {
                             println!("Varname {}", var_name);
                             let val = self.pop_val()?;
                             println!("Val {}", val);
-                            self.variables.insert(var_name, val);
+                            self.variables.insert(var_name.to_string(), val);
                             None
                         },
-                        Instruction::ReadVar => {
-                            let var_name = self.read_string()?;
+                        Instruction::ReadVar(var_name) => {
                             match self.variables.get(&var_name) {
                                 Some(val) => {
                                     println!("Pushing var {}", val);
-                                    self.push_val(*val)?;
+                                    self.push_val(StackValue::Int(*val))?;
                                     None
                                 },
                                 _ => Some(VMError::StackUnderflow),
                             }
                         },
-                        Instruction::FuncCall => {
+                        Instruction::FuncCall(func_name) => {
                             unimplemented!()
                         },
-                        Instruction::Jump => {
-                            let offset = self.read_byte()? as usize;
-                            self.ip += offset;
+                        Instruction::Jump(offset) => {
+                            self.ip += offset as usize;
                             None
                         },
-                        Instruction::JumpBack => {
-                            let offset = self.read_byte()? as usize;
+                        Instruction::JumpBack(offset) => {
                             println!("JumpBack {}", offset);
-                            self.ip -= offset;
+                            self.ip -= offset as usize;
                             None
                         },
-                        Instruction::JumpIfFalse => {
-                            let offset = self.read_byte()? as usize;
+                        Instruction::JumpIfFalse(offset) => {
                             let val = self.pop_val()?;
                             println!("JumpIfFalse: {}", val);
                             if val == 0 {
-                                self.ip += offset;
+                                self.ip += offset as usize;
                             }
                             None
                         },
-                        Instruction::JumpIfTrue => {
-                            let offset = self.read_byte()? as usize;
+                        Instruction::JumpIfTrue(offset) => {
                             let val = self.pop_val()?;
                             if val != 0 {
-                                self.ip += offset;
+                                self.ip += offset as usize;
                             }
                             None
                         },
@@ -267,16 +205,11 @@ impl Bytecode {
                         Instruction::RecvChannel => {
                             let receiver = self.pop_receiver()?;
                             let value = receiver.recv().unwrap();
-                            self.push_val(value)?;
+                            self.push_val(StackValue::Int(value))?;
                             None
                         },
                         Instruction::Spawn => {
                             unimplemented!()
-                        },
-                        Instruction::LoadChannel => {
-                            let (sender, receiver): (Sender<i64>, Receiver<i64>) = mpsc::channel();
-                            self.stack.push(StackValue::Channel(sender.clone(), receiver));
-                            None
                         },
                         Instruction::Finish => break,
                     }
@@ -423,12 +356,13 @@ mod tests {
 
     #[test]
     fn test_sender() {
+        let (sender, receiver): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+
         let mut vm = Bytecode::new(vec![
-                Instruction::LoadChannel.into(),
-                Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
-                Instruction::SendChannel.into(),
-                Instruction::RecvChannel.into(),
-                Instruction::Finish.into(),
+                Instruction::LoadVal(StackValue::Int(10)),
+                Instruction::LoadVal(StackValue::Channel(sender, receiver)),
+                Instruction::SendChannel,
+                Instruction::Finish
             ]
         );
 
