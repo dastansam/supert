@@ -42,6 +42,14 @@ pub enum Instruction {
     Gte,
     /// Less than or equal to
     Lte,
+    /// Pops the channel and a value from the stack and sends the value to the channel using a blocking send
+    SendChannel,
+    /// Pops the channel from the stack, receives a value from the channel (this may block) and pushes it onto the stack
+    RecvChannel,
+    /// Pops the channel from the stack and closes the channel
+    Spawn,
+    /// Loads sender and receiver to the stack
+    LoadChannel,
     /// Jump to a specific instruction if top of stack is zero
     Finish,
 }
@@ -68,7 +76,11 @@ impl From<u8> for Instruction {
             16 => Instruction::Lt,
             17 => Instruction::Gte,
             18 => Instruction::Lte,
-            19 => Instruction::Finish,
+            19 => Instruction::SendChannel,
+            20 => Instruction::RecvChannel,
+            21 => Instruction::Spawn,
+            22 => Instruction::LoadChannel,
+            23 => Instruction::Finish,
             _ => panic!("Invalid instruction byte: {}", byte),
         }
     }
@@ -96,7 +108,11 @@ impl Into<u8> for Instruction {
             Instruction::Lt => 16,
             Instruction::Gte => 17,
             Instruction::Lte => 18,
-            Instruction::Finish => 19,
+            Instruction::SendChannel => 19,
+            Instruction::RecvChannel => 20,
+            Instruction::Spawn => 21,
+            Instruction::LoadChannel => 22,
+            Instruction::Finish => 23
         }
     }
 }
