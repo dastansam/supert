@@ -4,6 +4,4 @@ pub enum VMError {
     DivisionByZero,
     StackOverflow,
     StackUnderflow,
-    UnknownInstruction,
-    UnwrapError,
 }
