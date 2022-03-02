@@ -1,7 +1,6 @@
 
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
-use std::thread;
 use std::{collections::HashMap};
 
 use crate::error::VMError;
@@ -20,8 +19,6 @@ pub struct Bytecode {
     pub instructions: Vec<u8>,
     /// Program stack
     pub stack: Vec<StackValue>,
-    /// Method name mapped to start instruction pointer
-    pub method_labels: HashMap<String, usize>,
     /// Mapping for local variables
     pub variables: HashMap<String, i64>,
     /// Current instruction pointer, points to the next instruction to be executed
@@ -51,7 +48,6 @@ impl Bytecode {
     pub fn new(instructions: Vec<u8>) -> Bytecode {
         Bytecode {
             instructions,
-            method_labels: HashMap::new(),
             stack: Vec::new(),
             variables: HashMap::new(),
             ip: 0,
@@ -89,7 +85,20 @@ impl Bytecode {
         }
     }
 
+    /// Pop channel
+    fn pop_channel(&mut self) -> Result<(Sender<i64>, Receiver<i64>), VMError> {
+        if self.stack.len() > 0 {
+            match self.stack.pop().unwrap() {
+                StackValue::Channel(sender, receiver) => Ok((sender, receiver)),
+                _ => Err(VMError::StackUnderflow),
+            }
+        } else {
+            Err(VMError::StackUnderflow)
+        }
+    }
+
     /// Pop sender from the stack
+    /// Use this if you don't want to push the channel back onto the stack
     fn pop_sender(&mut self) -> Result<Sender<i64>, VMError> {
         if self.stack.len() > 0 {
             match self.stack.pop().unwrap() {
@@ -102,6 +111,7 @@ impl Bytecode {
     }
 
     /// Pop receiver from the stack
+    /// Use this if you don't want to push the channel back onto the stack
     fn pop_receiver(&mut self) -> Result<Receiver<i64>, VMError> {
         if self.stack.len() > 0 {
             match self.stack.pop().unwrap() {
@@ -129,28 +139,6 @@ impl Bytecode {
         let byte = self.instructions[self.ip];
         self.ip += 1;
         Ok(byte)
-    }
-
-    /// Read next short integer from the program
-    fn read_short(&mut self) -> Result<i16, VMError> {
-        match self.instructions[self.ip..self.ip+2].try_into() {
-            Ok(val) => {
-                self.ip += 2;
-                Ok(i16::from_le_bytes(val))
-            },
-            Err(_) => Err(VMError::UnknownInstruction),
-        }
-    }
-
-    /// Read next short integer from the program
-    fn read_i32(&mut self) -> Result<i32, VMError> {
-        match self.instructions[self.ip..self.ip+4].try_into() {
-            Ok(val) => {
-                self.ip += 4;
-                Ok(i32::from_le_bytes(val))
-            },
-            Err(_) => Err(VMError::UnknownInstruction),
-        }
     }
 
     /// Read next long integer from the program
@@ -201,8 +189,29 @@ impl Bytecode {
                             }
                         },
                         Instruction::FuncCall => {
-                            unimplemented!()
+                            // first two bytes are start index of the function
+                            let start_ip = ((self.read_byte()? as u16) << 8) | (self.read_byte()? as u16);
+                            
+                            // next byte is the number of arguments
+                            let num_args = self.read_byte()? as usize;
+
+                            // read the arguments and push them onto the stack
+                            for _ in 0..num_args {
+                                let arg = self.read_long()?;
+                                println!("Arg {}", arg);
+                                self.push_val(arg)?;
+                            }
+
+                            println!("FuncCall: {} {}", start_ip, num_args);
+                            self.ip = start_ip as usize;
+                            None
                         },
+                        Instruction::ReturnIndex => {
+                            let index = ((self.read_byte()? as u16) << 8) | (self.read_byte()? as u16);
+                            println!("ReturnIndex: {}", index);
+                            self.ip = index as usize;
+                            None
+                        }
                         Instruction::Jump => {
                             let offset = self.read_byte()? as usize;
                             self.ip += offset;
@@ -255,28 +264,27 @@ impl Bytecode {
                         Instruction::Gte => execute_native!(self, >=),
                         Instruction::SendChannel => {
                             let value = self.pop_val()?;
-                            let sender = self.pop_sender()?;
+                            let (sender, receiver) = self.pop_channel()?;
                             match sender.send(value) {
-                                Ok(_) => None,
-                                Err(e) => {
-                                    println!("Error sending: {}", e);
-                                    Some(VMError::StackUnderflow)
-                                }
-                            }
+                                Ok(_) => {},
+                                Err(e) => println!("Error sending: {}", e),
+                            };
+                            // push the channel back onto the stack
+                            // so it can be used again
+                            self.stack.push(StackValue::Channel(sender, receiver));
+                            None
                         },
                         Instruction::RecvChannel => {
-                            let receiver = self.pop_receiver()?;
+                            let (sender, receiver) = self.pop_channel()?;
                             let value = receiver.recv().unwrap();
+                            // push the channel back onto the stack
+                            // so it can be used again
+                            self.stack.push(StackValue::Channel(sender, receiver));
                             self.push_val(value)?;
                             None
                         },
                         Instruction::Spawn => {
                             unimplemented!()
-                        },
-                        Instruction::LoadChannel => {
-                            let (sender, receiver): (Sender<i64>, Receiver<i64>) = mpsc::channel();
-                            self.stack.push(StackValue::Channel(sender.clone(), receiver));
-                            None
                         },
                         Instruction::Finish => break,
                     }
@@ -300,138 +308,216 @@ impl Bytecode {
 
 #[cfg(test)]
 mod tests {
+    use std::iter::Inspect;
+
     use super::*;
 
-    // #[test]
-    // fn test_arithmetic() {
-    //     // Arithmetic
-    //     // let x = 1
-    //     // let y = 2
-    //     // return (x + 1) * y
-    //     let mut vm = Bytecode::new(vec![
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::WriteVar.into(), 0x78, 0x00, 0x00, 0x00,
-    //         Instruction::LoadVal.into(), 0x02, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::WriteVar.into(), 0x79, 0x00, 0x00, 0x00,
-    //         Instruction::ReadVar.into(), 0x78, 0x00, 0x00, 0x00,
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::Add.into(),
-    //         Instruction::ReadVar.into(), 0x79, 0x00, 0x00, 0x00,
-    //         Instruction::Mul.into(),
-    //         Instruction::Finish.into(),
-    //     ]);
+    #[test]
+    fn test_arithmetic() {
+        // Arithmetic
+        // let x = 1
+        // let y = 2
+        // return (x + 1) * y
+        let mut vm = Bytecode::new(vec![
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::WriteVar.into(), 0x78, 0x00, 0x00, 0x00,
+            Instruction::LoadVal.into(), 0x02, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::WriteVar.into(), 0x79, 0x00, 0x00, 0x00,
+            Instruction::ReadVar.into(), 0x78, 0x00, 0x00, 0x00,
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::Add.into(),
+            Instruction::ReadVar.into(), 0x79, 0x00, 0x00, 0x00,
+            Instruction::Mul.into(),
+            Instruction::Finish.into(),
+        ]);
 
-    //     assert_eq!(vm.interpret().unwrap(), 4);
+        assert_eq!(vm.interpret().unwrap(), 4);
             
-    //     // Arithmetic case 2
-    //     // let x = 5
-    //     // let y = 8
-    //     // let z = x * y
-    //     // z / 2
-    //     let mut vm_1 = Bytecode::new(vec![
-    //         Instruction::LoadVal.into(), 0x05, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::WriteVar.into(), 0x78, 0x00, 0x00, 0x00,
-    //         Instruction::LoadVal.into(), 0x08, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::WriteVar.into(), 0x79, 0x00, 0x00, 0x00,
-    //         Instruction::ReadVar.into(), 0x78, 0x00, 0x00, 0x00,
-    //         Instruction::ReadVar.into(), 0x79, 0x00, 0x00, 0x00,
-    //         Instruction::Mul.into(),
-    //         Instruction::WriteVar.into(), 0x7A, 0x00, 0x00, 0x00,
-    //         Instruction::LoadVal.into(), 0x02, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::ReadVar.into(), 0x7A, 0x00, 0x00, 0x00,
-    //         Instruction::Div.into(),
-    //         Instruction::Finish.into(),
-    //     ]);
+        // Arithmetic case 2
+        // let x = 5
+        // let y = 8
+        // let z = x * y
+        // z / 2
+        let mut vm_1 = Bytecode::new(vec![
+            Instruction::LoadVal.into(), 0x05, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::WriteVar.into(), 0x78, 0x00, 0x00, 0x00,
+            Instruction::LoadVal.into(), 0x08, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::WriteVar.into(), 0x79, 0x00, 0x00, 0x00,
+            Instruction::ReadVar.into(), 0x78, 0x00, 0x00, 0x00,
+            Instruction::ReadVar.into(), 0x79, 0x00, 0x00, 0x00,
+            Instruction::Mul.into(),
+            Instruction::WriteVar.into(), 0x7A, 0x00, 0x00, 0x00,
+            Instruction::LoadVal.into(), 0x02, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::ReadVar.into(), 0x7A, 0x00, 0x00, 0x00,
+            Instruction::Div.into(),
+            Instruction::Finish.into(),
+        ]);
 
-    //     assert_eq!(vm_1.interpret().unwrap(), 20);
-    // }
-
-    // #[test]
-    // fn test_zero_division() {
-    //     let mut vm = Bytecode::new(vec![
-    //         Instruction::LoadVal.into(), 0x00, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::Div.into(),
-    //         Instruction::Finish.into(),
-    //     ]);
-
-    //     assert_eq!(vm.interpret().unwrap_err(), VMError::DivisionByZero);
-    // }
-
-    // #[test]
-    // fn test_loop() {
-    //     // Pseudocode is this:
-    //     //
-    //     // let test = 1 + 5
-    //     // while test < 10:
-    //     //    test += 1
-    //     // i
-    //     let mut vm = Bytecode::new(vec![
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
-    //         Instruction::LoadVal.into(), 0x05, 0, 0, 0, 0, 0, 0, 0, // 5
-    //         Instruction::Add.into(), // 6
-    //         Instruction::WriteVar.into(), 74, 65, 73, 74, // "test"
-    //         Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
-    //         Instruction::LoadVal.into(), 0x0A, 0, 0, 0, 0, 0, 0, 0, // 10
-    //         Instruction::Lt.into(), // test < 10
-    //         Instruction::JumpIfFalse.into(), 0x16, // Skip to instruction after `JumpBack` if false
-    //         Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
-    //         Instruction::Add.into(), // test += 1
-    //         Instruction::WriteVar.into(), 74, 65, 73, 74, // "test"
-    //         Instruction::JumpBack.into(), 0x27, // Jump back to loop condition
-    //         Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
-    //         Instruction::Finish.into(), 
-    //     ]);
-
-    //     assert_eq!(vm.interpret().unwrap(), 10);
-    // }
-
-    // #[test]
-    // fn test_for_loop() {
-    //     // Sum of all squares of numbers from 1 to 10
-    //     // let test = 0
-    //     // for temp in 1..11:
-    //     //    test += temp * temp
-    //     // test => 385
-    //     let mut vm = Bytecode::new(vec![
-    //         Instruction::LoadVal.into(), 0, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::WriteVar.into(), 0x74, 0x65, 0x73, 0x74, // "test"
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
-    //         Instruction::WriteVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
-    //         Instruction::LoadVal.into(), 0x0A, 0, 0, 0, 0, 0, 0, 0, // 10
-    //         Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
-    //         Instruction::Gte.into(), // temp <= 10
-    //         Instruction::JumpIfFalse.into(), 44, // Skip 44 instructions forward (to after JUMP_BACK)
-    //         Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70,
-    //         Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70,
-    //         Instruction::Mul.into(),
-    //         Instruction::ReadVar.into(), 0x74, 0x65, 0x73, 0x74,
-    //         Instruction::Add.into(),
-    //         Instruction::WriteVar.into(), 0x74, 0x65, 0x73, 0x74,
-    //         Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
-    //         Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
-    //         Instruction::Add.into(), // temp++
-    //         Instruction::WriteVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
-    //         Instruction::JumpBack.into(), 61, // Jump back to the start of the loop (condition)
-    //         Instruction::ReadVar.into(), 0x74, 0x65, 0x73, 0x74, 
-    //         Instruction::Finish.into(),
-    //     ]);
-
-    //     assert_eq!(vm.interpret().unwrap(), 385);
-    // }
+        assert_eq!(vm_1.interpret().unwrap(), 20);
+    }
 
     #[test]
-    fn test_sender() {
+    fn test_zero_division() {
         let mut vm = Bytecode::new(vec![
-                Instruction::LoadChannel.into(),
-                Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
-                Instruction::SendChannel.into(),
-                Instruction::RecvChannel.into(),
-                Instruction::Finish.into(),
-            ]
-        );
+            Instruction::LoadVal.into(), 0x00, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::Div.into(),
+            Instruction::Finish.into(),
+        ]);
+
+        assert_eq!(vm.interpret().unwrap_err(), VMError::DivisionByZero);
+    }
+
+    #[test]
+    fn test_loop() {
+        // Pseudocode is this:
+        //
+        // let test = 1 + 5
+        // while test < 10:
+        //    test += 1
+        // i
+        let mut vm = Bytecode::new(vec![
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
+            Instruction::LoadVal.into(), 0x05, 0, 0, 0, 0, 0, 0, 0, // 5
+            Instruction::Add.into(), // 6
+            Instruction::WriteVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::LoadVal.into(), 0x0A, 0, 0, 0, 0, 0, 0, 0, // 10
+            Instruction::Lt.into(), // test < 10
+            Instruction::JumpIfFalse.into(), 0x16, // Skip to instruction after `JumpBack` if false
+            Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
+            Instruction::Add.into(), // test += 1
+            Instruction::WriteVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::JumpBack.into(), 0x27, // Jump back to loop condition
+            Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::Finish.into(), 
+        ]);
+
+        assert_eq!(vm.interpret().unwrap(), 10);
+    }
+
+    #[test]
+    fn test_for_loop() {
+        // Sum of all squares of numbers from 1 to 10
+        // let test = 0
+        // for temp in 1..11:
+        //    test += temp * temp
+        // test => 385
+        let mut vm = Bytecode::new(vec![
+            Instruction::LoadVal.into(), 0, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::WriteVar.into(), 0x74, 0x65, 0x73, 0x74, // "test"
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::WriteVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
+            Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
+            Instruction::LoadVal.into(), 0x0A, 0, 0, 0, 0, 0, 0, 0, // 10
+            Instruction::Lte.into(), // temp <= 10
+            Instruction::JumpIfFalse.into(), 44, // Skip 44 instructions forward (to after JUMP_BACK)
+            Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70,
+            Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70,
+            Instruction::Mul.into(),
+            Instruction::ReadVar.into(), 0x74, 0x65, 0x73, 0x74,
+            Instruction::Add.into(),
+            Instruction::WriteVar.into(), 0x74, 0x65, 0x73, 0x74,
+            Instruction::ReadVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
+            Instruction::Add.into(), // temp++
+            Instruction::WriteVar.into(), 0x74, 0x65, 0x6d, 0x70, // "temp"
+            Instruction::JumpBack.into(), 61, // Jump back to the start of the loop (condition)
+            Instruction::ReadVar.into(), 0x74, 0x65, 0x73, 0x74, 
+            Instruction::Finish.into(),
+        ]);
+
+        assert_eq!(vm.interpret().unwrap(), 385);
+    }
+
+    #[test]
+    fn test_more_loop() {
+        let mut vm = Bytecode::new(vec![
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
+            Instruction::LoadVal.into(), 0x05, 0, 0, 0, 0, 0, 0, 0, // 5
+            Instruction::Add.into(), // 6
+            Instruction::WriteVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::LoadVal.into(), 0x64, 0, 0, 0, 0, 0, 0, 0, // 100
+            Instruction::Lt.into(), // test < 100
+            Instruction::JumpIfFalse.into(), 0x16, // Skip to instruction after `JumpBack` if false
+            Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0, // 1
+            Instruction::Add.into(), // test += 1
+            Instruction::WriteVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::JumpBack.into(), 0x27, // Jump back to loop condition
+            Instruction::ReadVar.into(), 74, 65, 73, 74, // "test"
+            Instruction::Finish.into(), 
+        ]);
+
+        assert_eq!(vm.interpret().unwrap(), 100);
+    }
+
+    #[test]
+    fn test_channel() {
+        let instructions = vec![
+            Instruction::LoadVal.into(), 0x01, 0, 0, 0, 0, 0, 0, 0,
+            Instruction::SendChannel.into(),
+            Instruction::RecvChannel.into(),
+            Instruction::Finish.into(),
+        ];
+
+        let (sender, receiver): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+
+        let mut vm = Bytecode {
+            instructions,
+            stack: vec![StackValue::Channel(sender, receiver)],
+            ip: 0,
+            variables: HashMap::new(),
+        };
 
         assert_eq!(vm.interpret().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_func_call() {
+        // fn add(x: i64, y: i64) -> i64 {
+        //     x + y
+        // }
+        let fn_add = vec![
+            Instruction::WriteVar.into(), 0x78, 0x61, 0x64, 0x64, // "xadd"
+            Instruction::WriteVar.into(), 0x79, 0x61, 0x64, 0x64, // "yadd"
+            Instruction::ReadVar.into(), 0x78, 0x61, 0x64, 0x64, // "xadd"
+            Instruction::ReadVar.into(), 0x79, 0x61, 0x64, 0x64, // "yadd"
+            Instruction::Add.into(), // xadd + yadd
+        ];
+
+        let fn_call = vec![
+            Instruction::FuncCall.into(), 0x00, 0x00, 0x02, 
+            0x0A, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // x: 522
+            0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, // y: 65793
+        ];
+        
+        let return_index = (fn_add.len() + fn_call.len() + 3) as u16;
+
+        // merge fn_add and main bytecode
+        // add(522, 65793)
+        // => 66315
+        let instructions = vec![
+            fn_add.clone(),
+            vec![
+                Instruction::ReturnIndex.into(),
+            ],
+            return_index.to_le_bytes().to_vec(),
+            fn_call.clone(),
+            vec![
+                Instruction::Finish.into(),
+            ],
+        ].concat();
+
+        let mut vm = Bytecode {
+            instructions,
+            stack: vec![],
+            ip: fn_add.len() + 3,
+            variables: HashMap::new(),
+        };
+
+        assert_eq!(vm.interpret().unwrap(), 66315);
     }
 }

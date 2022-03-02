@@ -4,10 +4,8 @@ pub enum Instruction {
     /// Push a value onto the stack
     LoadVal,
     /// Write value to variable 
-    /// NOTE: Next byte to this instruction is variable name and it should be one character
     WriteVar,
     /// Read value from a variable
-    /// NOTE: Next byte to this instruction is variable name and it should be one character
     ReadVar,
     /// Call a method
     FuncCall,
@@ -48,8 +46,8 @@ pub enum Instruction {
     RecvChannel,
     /// Pops the channel from the stack and closes the channel
     Spawn,
-    /// Loads sender and receiver to the stack
-    LoadChannel,
+    /// Returns return index of the function
+    ReturnIndex,
     /// Jump to a specific instruction if top of stack is zero
     Finish,
 }
@@ -79,7 +77,7 @@ impl From<u8> for Instruction {
             19 => Instruction::SendChannel,
             20 => Instruction::RecvChannel,
             21 => Instruction::Spawn,
-            22 => Instruction::LoadChannel,
+            22 => Instruction::ReturnIndex,
             23 => Instruction::Finish,
             _ => panic!("Invalid instruction byte: {}", byte),
         }
@@ -111,8 +109,8 @@ impl Into<u8> for Instruction {
             Instruction::SendChannel => 19,
             Instruction::RecvChannel => 20,
             Instruction::Spawn => 21,
-            Instruction::LoadChannel => 22,
-            Instruction::Finish => 23
+            Instruction::ReturnIndex => 22,
+            Instruction::Finish => 23,
         }
     }
 }
