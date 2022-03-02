@@ -3,6 +3,10 @@ Stack based supert virtual machine
 
 It is a simple stack based interpreter that supports arithmetic operations, variables, loops and channels.
 
+## Info
+
+For more info about the interpreter, take a look at the README file of the `interpreter` (folder)[https://github.com/dastansam/supert/blob/main/interpreter/README.md]
+
 ## Build
 
 Make sure you have Rust development environment setup.

@@ -1,6 +1,5 @@
 
 use std::sync::mpsc::{Sender, Receiver};
-use std::sync::mpsc;
 use std::{collections::HashMap};
 
 use crate::error::VMError;
@@ -308,8 +307,6 @@ impl Bytecode {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::Inspect;
-
     use super::*;
 
     #[test]
@@ -463,7 +460,7 @@ mod tests {
             Instruction::Finish.into(),
         ];
 
-        let (sender, receiver): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        let (sender, receiver): (Sender<i64>, Receiver<i64>) = std::sync::mpsc::channel();
 
         let mut vm = Bytecode {
             instructions,

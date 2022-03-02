@@ -1,6 +1,6 @@
 # Design
 
-Here I will describe some of the design choices I made during the development
+Here I will describe some of the design choices I made during the development.
 
 ### Flatness
 
@@ -51,5 +51,4 @@ Instructions related to channels: `SendChannel`, `RecvChannel`. They are interpr
 
 For `Receiver` we can use `try_recv` method to get the value in a non-blocking manner, in case buffer is empty, to push it in the top of the `instructions` list. And similarly for `Sender`, `try_send` method sends the value to the channel without blocking. In case buffer is full, we can push the instruction back to the top of the `instructions` list.
 
-### Dealing with blocks
-
+To run two methods concurrently, we can use `futures::join` macro. For that, we would need to support async methods in the interpreter.
