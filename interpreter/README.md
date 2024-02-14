@@ -40,15 +40,3 @@ JumpBack M
 ```
 
 Here `N` is number of instructions to jump ahead, i.e to skip `JumpBack` instruction. And `M`, obviously, number of instructions to go back in the instructions stack. It should go back to the first instruction of condition of the loop. This makes it hard to debug when writing raw bytecode, since we would have to count the values of `N` and `M` by hand. Obviously, if we have a language with syntax and compiler for this interpreter, it would be possible to dynamically compute offset numbers while compiling.
-
-## Answers to questions
-
-*Describe in a few sentences how each bytecode instruction could be interpreted,
-and how your interpreter or language runtime could deal with the blocking nature
-of the send and the receive instructions*
-
-Instructions related to channels: `SendChannel`, `RecvChannel`. They are interpreted similar to any other instruction and `SendChannel` consumes `i64` value to send to channel.
-
-For `Receiver` we can use `try_recv` method to get the value in a non-blocking manner, in case buffer is empty, to push it in the top of the `instructions` list. And similarly for `Sender`, `try_send` method sends the value to the channel without blocking. In case buffer is full, we can push the instruction back to the top of the `instructions` list.
-
-To run two methods concurrently, we can use `futures::join` macro. For that, we would need to support async methods in the interpreter.
